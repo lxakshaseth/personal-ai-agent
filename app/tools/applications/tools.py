@@ -257,8 +257,10 @@ class SendWhatsAppMessageTool(AbstractTool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         contact: str = kwargs.get("contact", "") or ""
-        raw_msg: str = kwargs.get("message", "") or ""
-        message: str = raw_msg.strip() or "Hello"
+        message: str = kwargs.get("message", "").strip()
+
+        if not message:
+            return ToolResult(success=False, output="", error="Message cannot be empty.")
 
         encoded_msg = urllib.parse.quote(message)
 
