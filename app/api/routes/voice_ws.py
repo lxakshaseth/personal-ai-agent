@@ -31,6 +31,7 @@ async def voice_streaming_endpoint(websocket: WebSocket) -> None:
           {"type": "prompt", "text": "hello"}
           {"type": "interrupt"}
           {"type": "ping"}
+          {"type": "get_state"}
 
     Server -> Client (JSON):
       - {"type": "vad_state", "state": "speaking" | "silence"}
@@ -41,6 +42,8 @@ async def voice_streaming_endpoint(websocket: WebSocket) -> None:
       - {"type": "audio_chunk", "chunk_index": 0, "text": "...", "data": "base64..."}
       - {"type": "assistant_done", "metrics": {...}}
       - {"type": "interrupted"}
+      - {"type": "state_machine", "state": "IDLE|LISTENING|PROCESSING|SPEAKING|INTERRUPTING|ERROR"}
+      - {"type": "heartbeat"}
     """
     await websocket.accept()
     logger.info("Voice streaming WebSocket client connected.")
@@ -58,11 +61,24 @@ async def voice_streaming_endpoint(websocket: WebSocket) -> None:
     )
     await pipeline.start()
 
+    # ── Heartbeat Task: Prevents NAT/proxy timeouts (Phase 24) ───────────────
+    async def heartbeat_loop() -> None:
+        """Send a lightweight ping every 25s to keep the WebSocket alive."""
+        while True:
+            await asyncio.sleep(25)
+            try:
+                await websocket.send_text(json.dumps({"type": "heartbeat"}))
+            except Exception:
+                break
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
+
     try:
         # Initial greeting event
         await send_event({
             "type": "connection_ready",
             "message": "NOVA Real-Time Conversational Voice Engine Ready",
+            "state": "IDLE",
         })
 
         while True:
@@ -76,12 +92,15 @@ async def voice_streaming_endpoint(websocket: WebSocket) -> None:
                 if vad_event == "speech_start":
                     # If assistant is currently speaking and user starts talking -> BARGE IN!
                     if pipeline.is_speaking:
+                        await send_event({"type": "state_machine", "state": "INTERRUPTING"})
                         await pipeline.interrupt("user_barge_in")
 
                     await send_event({"type": "vad_state", "state": "speaking"})
+                    await send_event({"type": "state_machine", "state": "LISTENING"})
 
                 elif vad_event == "speech_final" and final_audio:
                     await send_event({"type": "vad_state", "state": "silence"})
+                    await send_event({"type": "state_machine", "state": "PROCESSING"})
                     # Dispatch to low-latency Whisper STT and streaming LLM
                     asyncio.create_task(pipeline.process_user_audio(final_audio))
 
@@ -98,20 +117,33 @@ async def voice_streaming_endpoint(websocket: WebSocket) -> None:
                     await send_event({"type": "pong"})
 
                 elif msg_type in ("interrupt", "stop", "cancel"):
+                    await send_event({"type": "state_machine", "state": "INTERRUPTING"})
                     await pipeline.interrupt("client_request")
+                    await send_event({"type": "state_machine", "state": "IDLE"})
 
                 elif msg_type == "prompt":
                     prompt_text = payload.get("text", "")
                     if prompt_text:
+                        await send_event({"type": "state_machine", "state": "PROCESSING"})
                         asyncio.create_task(pipeline.process_text_prompt(prompt_text))
 
                 elif msg_type == "clear_history":
                     pipeline.conv_mgr.clear()
                     await send_event({"type": "history_cleared"})
 
+                elif msg_type == "get_state":
+                    # Client can query current pipeline state on reconnect
+                    state = "SPEAKING" if pipeline.is_speaking else "IDLE"
+                    await send_event({"type": "state_machine", "state": state})
+
     except WebSocketDisconnect:
         logger.info("Voice streaming WebSocket client disconnected.")
     except Exception as exc:
         logger.warning("Voice streaming WebSocket exception: %s", exc)
+        try:
+            await send_event({"type": "state_machine", "state": "ERROR", "detail": str(exc)})
+        except Exception:
+            pass
     finally:
+        heartbeat_task.cancel()
         await pipeline.stop()

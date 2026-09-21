@@ -17,11 +17,14 @@ import {
   SendHorizontal,
   Activity,
   VolumeX,
+  TrendingDown,
 } from 'lucide-react';
 import {
   browserVoice,
   streamingVoiceClient,
   StreamingVoiceEvents,
+  VoiceState,
+  LatencyRecord,
 } from '../services/voiceService';
 
 interface ConversationItem {
@@ -46,6 +49,11 @@ export const VoicePage: React.FC = () => {
   const [silenceDelay, setSilenceDelay] = useState<number>(1200); // 1.2s fast default
   const [streamingText, setStreamingText] = useState('');
   const [latencyMetrics, setLatencyMetrics] = useState<{ [key: string]: number } | null>(null);
+  // Phase 16: State machine indicator
+  const [pipelineState, setPipelineState] = useState<VoiceState>('IDLE');
+  // Phase 18: Rolling latency history dashboard
+  const [latencyHistory, setLatencyHistory] = useState<LatencyRecord[]>([]);
+
 
   const conversationEndRef = useRef<HTMLDivElement>(null);
   const streamingTextRef = useRef<string>('');
@@ -167,6 +175,12 @@ export const VoicePage: React.FC = () => {
       onConnectionReady: () => {
         console.log('[StreamingVoiceClient] Connected to /ws/voice');
       },
+      onStateChange: (state: VoiceState) => {
+        setPipelineState(state);
+      },
+      onLatencyHistory: (history: LatencyRecord[]) => {
+        setLatencyHistory([...history]);
+      },
       onLlmStart: () => {
         setActiveStatus('executing');
         store.setStatus('executing', 'NOVA thinking (streaming)...');
@@ -202,6 +216,7 @@ export const VoicePage: React.FC = () => {
 
     streamingVoiceClient.connect(callbacks);
   }, [store, commitStreamingReply, handleBargeIn]);
+
 
   const handleToggleSession = () => {
     if (isInSession) {
@@ -671,17 +686,86 @@ export const VoicePage: React.FC = () => {
           </button>
         </div>
 
-        {/* Pipeline Info */}
+        {/* Pipeline State Machine + Live Latency Dashboard */}
         <div className="bg-[#0a0e17] border border-slate-800 rounded-2xl p-5 space-y-3">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-cyan-400" />
-            <h3 className="text-sm font-semibold text-white">Speed & Pipeline Metrics</h3>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-cyan-400" />
+              <h3 className="text-sm font-semibold text-white">Pipeline State &amp; Latency</h3>
+            </div>
+            {/* Phase 16: State Machine Pill */}
+            <span className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded-full border ${
+              pipelineState === 'SPEAKING'
+                ? 'bg-emerald-950/70 border-emerald-700 text-emerald-300'
+                : pipelineState === 'PROCESSING'
+                ? 'bg-purple-950/70 border-purple-700 text-purple-300'
+                : pipelineState === 'LISTENING'
+                ? 'bg-cyan-950/70 border-cyan-700 text-cyan-300'
+                : pipelineState === 'INTERRUPTING'
+                ? 'bg-red-950/70 border-red-700 text-red-300'
+                : pipelineState === 'ERROR'
+                ? 'bg-red-950/70 border-red-800 text-red-400'
+                : 'bg-slate-900/70 border-slate-700 text-slate-400'
+            }`}>
+              ● {pipelineState}
+            </span>
           </div>
 
           <div className="space-y-2 text-xs">
+            {/* Live last-turn latency */}
+            {latencyMetrics && (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 space-y-1.5">
+                <p className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Last Turn (Measured)</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="text-center">
+                    <p className="text-amber-300 font-bold font-mono text-sm">{(latencyMetrics.time_to_first_audio_ms || 0).toFixed(0)}ms</p>
+                    <p className="text-slate-500 text-[10px]">TTFA</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-cyan-300 font-bold font-mono text-sm">{(latencyMetrics.llm_first_token_ms || 0).toFixed(0)}ms</p>
+                    <p className="text-slate-500 text-[10px]">LLM Token</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-purple-300 font-bold font-mono text-sm">{(latencyMetrics.tts_first_audio_ms || 0).toFixed(0)}ms</p>
+                    <p className="text-slate-500 text-[10px]">TTS Audio</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Phase 18: Rolling 10-turn average */}
+            {latencyHistory.length >= 2 && (() => {
+              const n = latencyHistory.length;
+              const avgTtfa = Math.round(latencyHistory.reduce((s, r) => s + r.ttfa_ms, 0) / n);
+              const avgLlm = Math.round(latencyHistory.reduce((s, r) => s + r.llm_ms, 0) / n);
+              const avgTts = Math.round(latencyHistory.reduce((s, r) => s + r.tts_ms, 0) / n);
+              return (
+                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 space-y-1.5">
+                  <p className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider flex items-center gap-1">
+                    <TrendingDown className="w-3 h-3" />
+                    Rolling Average ({n} turns)
+                  </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="text-center">
+                      <p className={`font-bold font-mono text-sm ${avgTtfa < 500 ? 'text-emerald-400' : avgTtfa < 800 ? 'text-amber-400' : 'text-red-400'}`}>{avgTtfa}ms</p>
+                      <p className="text-slate-500 text-[10px]">Avg TTFA</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-cyan-400 font-bold font-mono text-sm">{avgLlm}ms</p>
+                      <p className="text-slate-500 text-[10px]">Avg LLM</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-purple-400 font-bold font-mono text-sm">{avgTts}ms</p>
+                      <p className="text-slate-500 text-[10px]">Avg TTS</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="flex justify-between py-2 border-b border-slate-800">
               <span className="text-slate-400">Active LLM Model</span>
-              <span className="text-cyan-300 font-mono font-semibold">Qwen 27B (160ms on Groq LPU)</span>
+              <span className="text-cyan-300 font-mono font-semibold">Qwen 27B (Groq LPU)</span>
             </div>
             <div className="flex justify-between py-2 border-b border-slate-800">
               <span className="text-slate-400">Silence Wait Window</span>
@@ -692,11 +776,12 @@ export const VoicePage: React.FC = () => {
               <span className="text-emerald-300 font-mono font-semibold">&lt; 20ms Deterministic</span>
             </div>
             <div className="flex justify-between py-2">
-              <span className="text-slate-400">Speech Synthesis</span>
-              <span className="text-purple-300 font-mono font-semibold">&lt; 50ms Native Audio</span>
+              <span className="text-slate-400">Auto-Reconnect</span>
+              <span className="text-emerald-300 font-mono font-semibold">✓ Exponential Backoff</span>
             </div>
           </div>
         </div>
+
       </div>
     </div>
   );

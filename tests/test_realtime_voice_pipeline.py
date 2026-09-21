@@ -361,6 +361,17 @@ class TestVoiceWebSocketRoute:
                 assert greeting["type"] == "connection_ready"
 
                 websocket.send_json({"type": "interrupt"})
-                response = websocket.receive_json()
-                assert response["type"] == "interrupted"
-                assert response["reason"] == "client_request"
+
+                # Route now sends state_machine (INTERRUPTING) first, then
+                # pipeline emits "interrupted", then route sends state_machine (IDLE).
+                # Consume messages until we find "interrupted".
+                found_interrupted = False
+                for _ in range(5):  # safety: at most 5 messages
+                    msg = websocket.receive_json()
+                    if msg["type"] == "interrupted":
+                        assert msg["reason"] == "client_request"
+                        found_interrupted = True
+                        break
+                    # Accept state_machine transitions as expected side-effects
+                    assert msg["type"] == "state_machine", f"Unexpected message: {msg}"
+                assert found_interrupted, "Never received 'interrupted' event"

@@ -537,6 +537,18 @@ class BrowserVoiceEngine {
 
 export const browserVoice = new BrowserVoiceEngine();
 
+// ── Phase 16: Voice State Machine ────────────────────────────────────────────
+export type VoiceState = 'IDLE' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'INTERRUPTING' | 'ERROR';
+
+// ── Phase 18: Latency History (rolling 10-turn average) ──────────────────────
+export interface LatencyRecord {
+  ts: number;
+  ttfa_ms: number;
+  llm_ms: number;
+  tts_ms: number;
+  stt_ms: number;
+}
+
 export interface StreamingVoiceEvents {
   onConnectionReady?: () => void;
   onVadState?: (state: 'speaking' | 'silence') => void;
@@ -548,6 +560,8 @@ export interface StreamingVoiceEvents {
   onAssistantDone?: (metrics: { [key: string]: number }) => void;
   onPlaybackComplete?: () => void;
   onInterrupted?: () => void;
+  onStateChange?: (state: VoiceState) => void;
+  onLatencyHistory?: (history: LatencyRecord[]) => void;
   onError?: (err: string) => void;
 }
 
@@ -558,16 +572,59 @@ export class StreamingVoiceClient {
   private isProcessingSpeechQueue = false;
   private isConnected = false;
 
+  // Phase 16: State Machine
+  private voiceState: VoiceState = 'IDLE';
+  private autoReconnect = false;
+
+  // Phase 19: Auto-reconnect with exponential backoff
+  private reconnectAttempts = 0;
+  private readonly MAX_RECONNECT = 5;
+  private readonly RECONNECT_BASE_MS = 1000;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Phase 18: Latency History (rolling 10-turn)
+  private latencyHistory: LatencyRecord[] = [];
+  private readonly MAX_HISTORY = 10;
+
   public get isReady(): boolean {
     return this.isConnected && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
   }
 
+  public get currentState(): VoiceState {
+    return this.voiceState;
+  }
+
+  public getLatencyHistory(): LatencyRecord[] {
+    return [...this.latencyHistory];
+  }
+
+  public getAverageLatency(): { avgTtfa: number; avgLlm: number; avgTts: number } | null {
+    if (this.latencyHistory.length === 0) return null;
+    const n = this.latencyHistory.length;
+    return {
+      avgTtfa: Math.round(this.latencyHistory.reduce((s, r) => s + r.ttfa_ms, 0) / n),
+      avgLlm: Math.round(this.latencyHistory.reduce((s, r) => s + r.llm_ms, 0) / n),
+      avgTts: Math.round(this.latencyHistory.reduce((s, r) => s + r.tts_ms, 0) / n),
+    };
+  }
+
+  private setState(state: VoiceState) {
+    if (this.voiceState !== state) {
+      this.voiceState = state;
+      this.callbacks.onStateChange?.(state);
+    }
+  }
+
   public connect(callbacks: StreamingVoiceEvents) {
     this.callbacks = callbacks;
+    this.autoReconnect = true;
+    this.reconnectAttempts = 0;
+    this._doConnect();
+  }
+
+  private _doConnect() {
     if (this.ws) {
-      try {
-        this.ws.close();
-      } catch {}
+      try { this.ws.close(); } catch {}
       this.ws = null;
     }
 
@@ -581,7 +638,11 @@ export class StreamingVoiceClient {
 
       this.ws.onopen = () => {
         this.isConnected = true;
+        this.reconnectAttempts = 0;
+        this.setState('IDLE');
         this.callbacks.onConnectionReady?.();
+        // Phase 19: Restore state after reconnect
+        this.ws?.send(JSON.stringify({ type: 'get_state' }));
       };
 
       this.ws.onmessage = (event) => {
@@ -591,26 +652,38 @@ export class StreamingVoiceClient {
 
           if (type === 'connection_ready') {
             this.callbacks.onConnectionReady?.();
+          } else if (type === 'heartbeat') {
+            // No-op: server heartbeat received, connection alive
+          } else if (type === 'state_machine') {
+            this.setState(msg.state as VoiceState);
           } else if (type === 'vad_state') {
             this.callbacks.onVadState?.(msg.state);
           } else if (type === 'transcript_final') {
             this.callbacks.onTranscriptFinal?.(msg.text);
           } else if (type === 'llm_start') {
+            this.setState('PROCESSING');
             this.callbacks.onLlmStart?.();
           } else if (type === 'llm_chunk') {
             this.callbacks.onLlmChunk?.(msg.text);
           } else if (type === 'tts_start') {
+            this.setState('SPEAKING');
             this.callbacks.onTtsStart?.(msg.chunk_index, msg.text);
             // Queue text for immediate progressive spoken playback
             this.queueTextForSpeech(msg.text);
           } else if (type === 'audio_chunk') {
             this.callbacks.onAudioChunk?.(msg.chunk_index, msg.text, msg.data);
           } else if (type === 'assistant_done') {
-            this.callbacks.onAssistantDone?.(msg.metrics || {});
+            const metrics = msg.metrics || {};
+            // Phase 18: Record latency
+            this._recordLatency(metrics);
+            this.callbacks.onAssistantDone?.(metrics);
+            this.setState('IDLE');
           } else if (type === 'interrupted') {
+            this.setState('IDLE');
             this.handleLocalInterruption();
             this.callbacks.onInterrupted?.();
           } else if (type === 'error') {
+            this.setState('ERROR');
             this.callbacks.onError?.(msg.message);
           }
         } catch (e) {
@@ -620,6 +693,19 @@ export class StreamingVoiceClient {
 
       this.ws.onclose = () => {
         this.isConnected = false;
+        if (this.voiceState !== 'IDLE') {
+          this.setState('IDLE');
+        }
+        // Phase 19: Auto-reconnect with exponential backoff
+        if (this.autoReconnect && this.reconnectAttempts < this.MAX_RECONNECT) {
+          const delay = Math.min(
+            this.RECONNECT_BASE_MS * Math.pow(2, this.reconnectAttempts),
+            30000
+          );
+          this.reconnectAttempts++;
+          console.info(`[VoiceClient] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT})`);
+          this.reconnectTimer = setTimeout(() => this._doConnect(), delay);
+        }
       };
 
       this.ws.onerror = (e) => {
@@ -630,6 +716,21 @@ export class StreamingVoiceClient {
     }
   }
 
+  private _recordLatency(metrics: { [key: string]: number }) {
+    const record: LatencyRecord = {
+      ts: Date.now(),
+      ttfa_ms: metrics.time_to_first_audio_ms || 0,
+      llm_ms: metrics.llm_first_token_ms || 0,
+      tts_ms: metrics.tts_first_audio_ms || 0,
+      stt_ms: metrics.stt_latency_ms || 0,
+    };
+    this.latencyHistory.push(record);
+    if (this.latencyHistory.length > this.MAX_HISTORY) {
+      this.latencyHistory.shift();
+    }
+    this.callbacks.onLatencyHistory?.([...this.latencyHistory]);
+  }
+
   public sendPrompt(text: string) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'prompt', text }));
@@ -637,6 +738,7 @@ export class StreamingVoiceClient {
   }
 
   public interrupt() {
+    this.setState('INTERRUPTING');
     this.handleLocalInterruption();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'interrupt' }));
@@ -674,14 +776,19 @@ export class StreamingVoiceClient {
   }
 
   public disconnect() {
+    this.autoReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.interrupt();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
     this.isConnected = false;
+    this.setState('IDLE');
   }
 }
 
 export const streamingVoiceClient = new StreamingVoiceClient();
-
