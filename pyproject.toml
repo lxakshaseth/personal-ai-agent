@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=71", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "personal-ai-agent"
+version = "0.1.0"
+description = "A production-ready personal AI computer agent powered by Groq"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.6",
+    "groq>=0.13",
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+voice = [
+    "faster-whisper>=1.0",
+    "pyttsx3>=2.90",
+    "sounddevice>=0.5",
+    "numpy>=2.1",
+]
+browser = [
+    "playwright>=1.49",
+]
+gui = [
+    "pyautogui>=0.9",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "python-dotenv>=1.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "--basetemp=.pytest_temp"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true

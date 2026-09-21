@@ -1,0 +1,36 @@
+# ─── Core web framework ───────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# ─── Groq LLM ────────────────────────────────────────────────────────────────
+groq==0.13.1
+
+# ─── HTTP client (used internally by groq SDK) ───────────────────────────────
+httpx==0.28.1
+
+# ─── System monitoring ───────────────────────────────────────────────────────
+psutil==6.1.1
+
+# ─── Voice ────────────────────────────────────────────────────────────────────
+pyttsx3>=2.90               # offline TTS (Windows SAPI5)
+sounddevice>=0.5            # microphone capture
+numpy>=2.1                  # audio processing
+# faster-whisper>=1.0       # offline STT (uncomment for offline mode; Groq Whisper used by default)
+
+# ─── Browser automation (optional) ───────────────────────────────────────────
+# playwright==1.49.0        # pip install playwright && playwright install chromium
+
+# ─── Computer control / screenshot ───────────────────────────────────────────
+# pyautogui==0.9.54         # screen/mouse/keyboard control + screenshots
+
+# ─── Storage (future) ────────────────────────────────────────────────────────
+# asyncpg==0.30.0           # PostgreSQL async driver
+# redis==5.2.1              # Redis client
+
+# ─── Development / Testing ───────────────────────────────────────────────────
+pytest==8.3.4
+pytest-asyncio==0.24.0
+httpx==0.28.1
+python-dotenv==1.0.1
