@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import groq
 from groq import AsyncGroq
@@ -134,11 +134,16 @@ class GroqClient:
     def _refresh_client(self) -> None:
         settings = get_settings()
         self._current_key = settings.groq_api_key
-        self._client = AsyncGroq(api_key=settings.groq_api_key)
+        self._client = AsyncGroq(api_key=settings.groq_api_key, max_retries=0)
         self._model = settings.groq_model
         self._max_tokens = settings.groq_max_tokens
         self._temperature = settings.groq_temperature
-        logger.debug("GroqClient initialised (model=%s)", self._model)
+        self._fast_model = settings.groq_fast_model
+        logger.debug("GroqClient initialised (model=%s, fast_model=%s)", self._model, self._fast_model)
+
+    @property
+    def fast_model(self) -> str:
+        return getattr(self, "_fast_model", "llama-3.1-8b-instant")
 
     def _get_client(self) -> AsyncGroq:
         settings = get_settings()
@@ -220,20 +225,24 @@ class GroqClient:
                 raise err from exc
             except Exception as exc:
                 exc_str = str(exc).lower()
-                if not _retried and ("model_not_found" in exc_str or "does not exist" in exc_str):
-                    if target_model != "openai/gpt-oss-120b":
-                        logger.warning("Model %r not available. Falling back to openai/gpt-oss-120b", target_model)
-                        self._model = "openai/gpt-oss-120b"
-                        return await self.chat_completion(
-                            messages,
-                            model="openai/gpt-oss-120b",
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            _retried=True,
-                        )
+                is_rate_limit = "rate_limit" in exc_str or "429" in exc_str or isinstance(exc, groq.RateLimitError)
+                is_not_found = "model_not_found" in exc_str or "does not exist" in exc_str
+
+                if not _retried and (is_rate_limit or is_not_found):
+                    fallback = "openai/gpt-oss-20b" if target_model != "openai/gpt-oss-20b" else "openai/gpt-oss-120b"
+                    reason = "Rate limit reached" if is_rate_limit else "Model not available"
+                    logger.warning("%s on %s. Instantly falling back to %s", reason, target_model, fallback)
+                    return await self.chat_completion(
+                        messages,
+                        model=fallback,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        _retried=True,
+                    )
 
                 detail = _classify_groq_error(exc)
-                await self._circuit_breaker.record_failure(exc)
+                if attempt == self.max_retries - 1:
+                    await self._circuit_breaker.record_failure(exc)
 
                 if detail.retryable and attempt < self.max_retries - 1:
                     backoff = (0.5 * (2 ** attempt)) + random.uniform(0.1, 0.3)
@@ -283,6 +292,61 @@ class GroqClient:
             response.usage.total_tokens if response.usage else "?",
         )
         return content
+
+    async def stream_chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        _retried: bool = False,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Streaming chat completion yielding text token deltas as they arrive from Groq.
+        Supports instant model failover on 429 rate limit or missing model.
+        """
+        client = self._get_client()
+        target_model = model or self._model
+
+        try:
+            stream = await client.chat.completions.create(
+                model=target_model,
+                messages=messages,
+                stream=True,
+                temperature=temperature if temperature is not None else self._temperature,
+                max_tokens=max_tokens or self._max_tokens,
+            )
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+            await self._circuit_breaker.record_success()
+
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            is_rate_limit = "rate_limit" in exc_str or "429" in exc_str or isinstance(exc, groq.RateLimitError)
+            is_not_found = "model_not_found" in exc_str or "does not exist" in exc_str
+
+            if not _retried and (is_rate_limit or is_not_found):
+                fallback = "openai/gpt-oss-20b" if target_model != "openai/gpt-oss-20b" else "openai/gpt-oss-120b"
+                logger.warning("Streaming failover from %s to %s (reason: %s)", target_model, fallback, exc)
+                async for token in self.stream_chat_completion(
+                    messages,
+                    model=fallback,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    _retried=True,
+                ):
+                    yield token
+                return
+
+            detail = _classify_groq_error(exc)
+            await self._circuit_breaker.record_failure(exc)
+            err = PlannerError(detail.message, detail=detail.model_dump_json())
+            err.groq_error = detail
+            raise err from exc
+
 
     async def chat_completion_with_tools(
         self,
@@ -349,22 +413,26 @@ class GroqClient:
                 raise err from exc
             except Exception as exc:
                 exc_str = str(exc).lower()
-                if not _retried and ("model_not_found" in exc_str or "does not exist" in exc_str):
-                    if target_model != "openai/gpt-oss-120b":
-                        logger.warning("Model %r not available. Falling back to openai/gpt-oss-120b", target_model)
-                        self._model = "openai/gpt-oss-120b"
-                        return await self.chat_completion_with_tools(
-                            messages,
-                            tools,
-                            model="openai/gpt-oss-120b",
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            tool_choice=tool_choice,
-                            _retried=True,
-                        )
+                is_rate_limit = "rate_limit" in exc_str or "429" in exc_str or isinstance(exc, groq.RateLimitError)
+                is_not_found = "model_not_found" in exc_str or "does not exist" in exc_str
+
+                if not _retried and (is_rate_limit or is_not_found):
+                    fallback = "openai/gpt-oss-20b" if target_model != "openai/gpt-oss-20b" else "openai/gpt-oss-120b"
+                    reason = "Rate limit reached" if is_rate_limit else "Model not available"
+                    logger.warning("%s on %s. Instantly falling back to %s", reason, target_model, fallback)
+                    return await self.chat_completion_with_tools(
+                        messages,
+                        tools,
+                        model=fallback,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tool_choice=tool_choice,
+                        _retried=True,
+                    )
 
                 detail = _classify_groq_error(exc)
-                await self._circuit_breaker.record_failure(exc)
+                if attempt == self.max_retries - 1:
+                    await self._circuit_breaker.record_failure(exc)
 
                 if detail.retryable and attempt < self.max_retries - 1:
                     backoff = (0.5 * (2 ** attempt)) + random.uniform(0.1, 0.3)

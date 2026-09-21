@@ -1,11 +1,17 @@
 export type AgentStatusType =
   | 'offline'
   | 'online'
+  | 'idle'
   | 'listening'
+  | 'transcribing'
   | 'thinking'
+  | 'planning'
   | 'executing'
   | 'waiting_confirmation'
-  | 'error';
+  | 'speaking'
+  | 'completed'
+  | 'error'
+  | 'cancelled';
 
 export interface ToolInfo {
   name: string;

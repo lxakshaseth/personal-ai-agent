@@ -178,7 +178,8 @@ class GroqPlanner:
             {"role": "user", "content": f"Original command: {command}\n\n{synthesis_prompt}"},
         ]
         try:
-            return await self._client.chat_completion(messages, max_tokens=256)
+            fast_model = getattr(self._client, "fast_model", None)
+            return await self._client.chat_completion(messages, model=fast_model, max_tokens=128)
         except Exception:
             # Fallback: build a plain summary without an LLM call
             parts = []

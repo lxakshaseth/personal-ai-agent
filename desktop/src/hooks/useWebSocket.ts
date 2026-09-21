@@ -69,7 +69,37 @@ export function useWebSocketInit() {
       }
     });
 
-    // 5. Legacy status_changed
+    // 5. Canonical agent.state event (requirement 2)
+    const unsubAgentState = wsClient.subscribe('agent.state', (event: any) => {
+      const data = event.payload || event;
+      const rawState = (data.state || data.status || 'online').toLowerCase();
+      const detail = data.detail || '';
+      agentStore.setStatus(rawState as AgentStatusType, detail);
+
+      if (rawState === 'idle' || rawState === 'completed' || rawState === 'online') {
+        const cur = agentStore.getState().activeExecution;
+        if (cur && cur.status === 'running') {
+          agentStore.setActiveExecution({
+            ...cur,
+            status: 'completed',
+            currentOperation: detail || 'Ready',
+            progress: 1.0,
+          });
+        }
+      } else if (rawState === 'speaking') {
+        const cur = agentStore.getState().activeExecution;
+        if (cur) {
+          agentStore.setActiveExecution({
+            ...cur,
+            status: 'running',
+            currentOperation: 'Speaking response aloud...',
+            progress: 0.95,
+          });
+        }
+      }
+    });
+
+    // 5b. Legacy status_changed
     const unsubStatus = wsClient.subscribe('status_changed', (event: WSEvent) => {
       const { status, detail } = event.payload || {};
       if (status) agentStore.setStatus(status, detail);
@@ -411,6 +441,7 @@ export function useWebSocketInit() {
     return () => {
       unsubConn();
       unsubInit();
+      unsubAgentState();
       unsubStatus();
       unsubConfReq();
       unsubConfRes();

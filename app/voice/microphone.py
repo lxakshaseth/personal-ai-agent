@@ -51,12 +51,13 @@ class MicrophoneRecorder:
         sample_rate: int = 16000,
         channels: int = 1,
         sample_width: int = 2,  # 16-bit
-        energy_threshold: float = 0.01,
+        energy_threshold: float = 0.005,
     ) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
         self.sample_width = sample_width
         self.energy_threshold = energy_threshold
+        self._lock = asyncio.Lock()
 
     def is_available(self) -> bool:
         return is_microphone_available()
@@ -68,26 +69,14 @@ class MicrophoneRecorder:
     async def record_phrase(
         self,
         timeout: float = 5.0,
-        phrase_time_limit: float = 7.0,
+        phrase_time_limit: float = 25.0,
+        silence_limit_seconds: float = 3.0,
     ) -> AudioData:
         """
         Record a single spoken phrase from the microphone with VAD early-stop.
 
-        Uses energy-based Voice Activity Detection: records in 100 ms chunks and
-        stops 0.8 s after speech energy drops below threshold, so short commands
-        (e.g. "open YouTube") finish in ~2-3 s instead of waiting the full limit.
-
-        Args:
-            timeout: Maximum seconds to wait for speech to start.
-            phrase_time_limit: Hard cap on recording duration (seconds).
-
-        Returns:
-            AudioData containing WAV formatted bytes.
-
-        Raises:
-            MicrophoneUnavailableError: If no mic hardware is present.
-            NoSpeechDetectedError: If only silence is recorded.
-            VoiceTimeoutError: If recording times out.
+        Waits 3.0 s after speech energy drops below threshold before finishing,
+        so user can pause/think without premature cutoff.
         """
         if not self.is_available():
             raise MicrophoneUnavailableError(
@@ -104,20 +93,35 @@ class MicrophoneRecorder:
                 "Install with: pip install sounddevice numpy"
             ) from exc
 
-        logger.info("Listening for phrase (max: %.1fs, timeout: %.1fs)...", phrase_time_limit, timeout)
+        # Prevent overlapping recordings
+        if self._lock.locked():
+            logger.info("Microphone already active; waiting for existing capture to complete.")
 
-        # Run recording in a thread pool to keep asyncio loop unblocked
-        loop = asyncio.get_running_loop()
+        async with self._lock:
+            # Echo prevention: if NOVA is speaking, interrupt/stop TTS playback
+            try:
+                from app.voice.voice_response_service import get_voice_service
+                vs = get_voice_service()
+                if vs.is_speaking:
+                    logger.info("Interrupting active speech playback for new microphone capture.")
+                    vs.stop()
+                    await asyncio.sleep(0.1)
+            except Exception:
+                pass
+
+            logger.info("Listening for phrase (max: %.1fs, timeout: %.1fs, silence: %.1fs)...", phrase_time_limit, timeout, silence_limit_seconds)
+            loop = asyncio.get_running_loop()
 
         def _record_sync() -> bytes:
             """
             Chunk-based recording with energy VAD.
             Collects 100 ms frames; stops when:
-              - 0.8 s of silence after initial speech, OR
+              - 3.0 s of silence after speech (silence_limit_seconds), OR
               - phrase_time_limit reached
             """
             chunk_size = int(0.1 * self.sample_rate)   # 100 ms per chunk
-            silence_limit_chunks = 8                    # 0.8 s of trailing silence
+            silence_limit_chunks = max(1, int(silence_limit_seconds / 0.1))  # 3.0 s of trailing silence
+            max_start_wait_chunks = int(timeout / 0.1)  # Break early if user hasn't spoken
             max_chunks = int(phrase_time_limit / 0.1)
             speech_started = False
             silence_count = 0
@@ -142,6 +146,11 @@ class MicrophoneRecorder:
                         silence_count += 1
                         if silence_count >= silence_limit_chunks:
                             logger.debug("VAD early-stop after %.1f s", len(frames) * 0.1)
+                            break
+                    else:
+                        # Haven't started speaking yet
+                        if len(frames) >= max_start_wait_chunks:
+                            logger.debug("VAD initial silence timeout reached (%.1fs)", timeout)
                             break
             except Exception as e:
                 raise MicrophoneError(f"Failed to record audio from microphone: {e}") from e

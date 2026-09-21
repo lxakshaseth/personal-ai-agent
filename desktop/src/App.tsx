@@ -44,19 +44,13 @@ export const App: React.FC = () => {
         return;
       }
 
-      // 2. Esc -> Cancel Current Active Task
+      // 2. Esc -> Global Stop (halts current active task and stops TTS speech playback immediately)
       if (e.key === 'Escape') {
-        const currentActive = agentState.activeTask || (agentState.tasks.find(t => t.status === 'executing' || t.status === 'planning'));
-        if (currentActive) {
-          try {
-            await api.cancelTask(currentActive.id);
-            store.upsertTask({
-              ...currentActive,
-              status: 'cancelled',
-            });
-          } catch (err) {
-            console.error('Failed to cancel active task on Esc', err);
-          }
+        e.preventDefault();
+        try {
+          await store.stopActive();
+        } catch (err) {
+          console.error('Failed to stop on Esc', err);
         }
       }
     };

@@ -41,6 +41,12 @@ class AgentOutput:
     error: str | None = None
     """Error message if success=False."""
 
+    should_speak: bool = True
+    """Whether this response should be spoken aloud by VoiceResponseService."""
+
+    mode: str = "COMMAND"
+    """Execution mode: 'CHAT', 'COMMAND', or 'TASK'."""
+
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional response metadata."""
 
@@ -50,6 +56,8 @@ class AgentOutput:
             "response": self.response,
             "tool_calls": self.tool_calls,
             "error": self.error,
+            "should_speak": self.should_speak,
+            "mode": self.mode,
             "metadata": self.metadata,
         }
 

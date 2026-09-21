@@ -34,6 +34,10 @@ class RunCommandRequest(BaseModel):
         description="Set to true to pre-confirm HIGH-risk tool execution",
     )
     session_id: str | None = Field(default=None, description="Optional session ID")
+    client_speaks: bool = Field(
+        default=False,
+        description="If True, client UI handles speech synthesis; backend skips host TTS to avoid duplicate audio.",
+    )
 
 
 class ToolCallInfo(BaseModel):
@@ -163,6 +167,19 @@ async def run_command(
         ) from exc
 
     tool_calls = [ToolCallInfo(**tc) for tc in output.tool_calls]
+
+    # Non-blocking async TTS: UI receives text immediately, audio plays concurrently
+    # (Skipped if client_speaks is True, e.g. web/desktop UI handles browser synthesis)
+    settings = get_settings()
+    if (
+        not body.client_speaks
+        and settings.voice_enabled
+        and getattr(output, "should_speak", True)
+        and output.response
+    ):
+        from app.voice.voice_response_service import get_voice_service
+        get_voice_service().speak_async(output.response)
+
     return RunCommandResponse(
         success=output.success,
         response=output.response,
@@ -424,13 +441,33 @@ async def cancel_task(task_id: str) -> dict[str, Any]:
     return {"status": "cancelled" if success else "failed", "task_id": task_id}
 
 
+@router.post("/stop")
 @router.post("/cancel")
 @router.post("/tasks/cancel_active")
-async def cancel_active_task() -> dict[str, Any]:
-    """Attempt to safely cancel the currently running agent task."""
+async def stop_or_cancel_active_task() -> dict[str, Any]:
+    """
+    Global interrupt & stop (ESC or Stop button):
+    Cancels the active agent task and immediately stops ongoing TTS speech playback.
+    """
     from app.agent.tasks import get_task_manager
-    success = get_task_manager().cancel_active_task()
-    return {"status": "cancelled" if success else "no_active_task"}
+    from app.services.event_bus import AgentStatus, get_event_bus
+    from app.voice.voice_response_service import get_voice_service
+
+    # 1. Stop active audio immediately
+    get_voice_service().stop()
+
+    # 2. Cancel active agent task
+    task_cancelled = get_task_manager().cancel_active_task()
+
+    # 3. Transition agent state back to IDLE
+    bus = get_event_bus()
+    bus.set_status(AgentStatus.ONLINE, "Ready")
+    bus.publish_event("agent.state", {"state": "IDLE", "detail": "Stopped by user"})
+
+    return {
+        "status": "stopped",
+        "task_cancelled": task_cancelled,
+    }
 
 
 @router.get("/logs/audit")
@@ -577,17 +614,15 @@ async def trigger_listen(agent: PersonalAgent = Depends(_get_agent)) -> dict[str
     bus.set_status(AgentStatus.EXECUTING, f"Executing: {text[:30]}...")
     out = await agent.run(AgentInput(command=text))
 
-    # Speak response
-    try:
-        tts = get_tts_provider()
-        await tts.speak(out.response)
-    except Exception as e:
-        logger.warning("TTS speech error: %s", e)
+    # Non-blocking async speech output: UI receives response immediately, speech plays concurrently
+    if out.response:
+        from app.voice.voice_response_service import get_voice_service
+        get_voice_service().speak_async(out.response, request_id=voice_req_id)
 
-    bus.set_status(AgentStatus.ONLINE, "Ready")
     return {
         "success": out.success,
         "transcript": text,
         "response": out.response,
         "tool_calls": out.tool_calls,
+        "speak": True,
     }

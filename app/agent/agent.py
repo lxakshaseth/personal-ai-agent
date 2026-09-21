@@ -22,7 +22,8 @@ import uuid
 from app.agent.base import AbstractAgent, AgentInput, AgentOutput
 from app.agent.executor import ToolExecutor
 from app.agent.history import CommandHistoryRecord, get_command_history_store
-from app.agent.planner import GroqPlanner
+from app.agent.fast_router import FastRouter, ResponseMode
+from app.agent.planner import GroqPlanner, ToolCallPlan
 from app.agent.schemas import GroqErrorType
 from app.agent.supervisor import SupervisorAgent
 from app.agent.tasks import get_task_manager
@@ -117,7 +118,105 @@ class PersonalAgent(AbstractAgent):
         )
 
         try:
-            # ── 0. Complex Multi-Step Task Check (Supervisor Agent) ─────────────────
+            # ── 0. Fast Path Deterministic Router (0ms LLM latency) ────────────────
+            fast_route = FastRouter.match(command)
+            if fast_route.matched:
+                if fast_route.mode == ResponseMode.CHAT:
+                    duration = round(time.time() - start_time, 2)
+                    reply = fast_route.direct_response or "Hey! What can I help you with?"
+                    task_mgr.complete_task(task.id, reply)
+                    bus.set_status(AgentStatus.ONLINE, "Ready", request_id=command_id)
+                    bus.publish_event(
+                        "agent.completed",
+                        {
+                            "request_id": command_id,
+                            "response": reply,
+                            "success": True,
+                            "duration": duration,
+                            "tool_calls": [],
+                            "task_id": task.id,
+                        },
+                    )
+                    out = AgentOutput(
+                        success=True,
+                        response=reply,
+                        tool_calls=[],
+                        should_speak=True,
+                        mode="CHAT",
+                    )
+                    self._record_history(command_id, command, out, start_time)
+                    if self._settings.debug_performance:
+                        logger.info("[ROUTER] Fast CHAT response returned in %0.1fms", duration * 1000)
+                    return out
+
+                elif fast_route.tool_name:
+                    bus.publish_event(
+                        "tool.selected",
+                        {
+                            "request_id": command_id,
+                            "tool": fast_route.tool_name,
+                            "arguments": fast_route.arguments,
+                            "task_id": task.id,
+                        },
+                    )
+                    bus.set_status(AgentStatus.EXECUTING, f"Executing {fast_route.tool_name}...", request_id=command_id)
+                    tool_plan = ToolCallPlan(
+                        tool_name=fast_route.tool_name,
+                        tool_call_id=f"fast_{uuid.uuid4().hex[:6]}",
+                        arguments=fast_route.arguments,
+                    )
+                    records = await self._executor.execute_plan(
+                        [tool_plan],
+                        command=command,
+                        confirmed=agent_input.confirmed,
+                        request_id=command_id,
+                        task_id=task.id,
+                    )
+                    rec = records[0] if records else None
+                    success = rec.result.success if rec else False
+                    tool_output = rec.result.output if (rec and rec.result.success) else (rec.result.error if rec else "Execution failed")
+
+                    if success:
+                        reply = fast_route.conversational_prefix or tool_output or "Done."
+                    else:
+                        reply = tool_output or "The operation failed."
+
+                    duration = round(time.time() - start_time, 2)
+                    task_mgr.complete_task(task.id, reply, error=None if success else tool_output)
+                    bus.set_status(AgentStatus.ONLINE, "Ready", request_id=command_id)
+                    tool_dicts = [
+                        {
+                            "tool": fast_route.tool_name,
+                            "args": fast_route.arguments,
+                            "success": success,
+                            "output": tool_output,
+                            "error": None if success else tool_output,
+                        }
+                    ]
+                    bus.publish_event(
+                        "agent.completed",
+                        {
+                            "request_id": command_id,
+                            "response": reply,
+                            "success": success,
+                            "duration": duration,
+                            "tool_calls": tool_dicts,
+                            "task_id": task.id,
+                        },
+                    )
+                    out = AgentOutput(
+                        success=success,
+                        response=reply,
+                        tool_calls=tool_dicts,
+                        should_speak=True,
+                        mode="COMMAND",
+                    )
+                    self._record_history(command_id, command, out, start_time)
+                    if self._settings.debug_performance:
+                        logger.info("[ROUTER] Fast tool %s executed in %0.1fms", fast_route.tool_name, duration * 1000)
+                    return out
+
+            # ── 1. Complex Multi-Step Task Check (Supervisor Agent) ─────────────────
             if self._supervisor.is_complex_command(command) and not agent_input.confirmed:
                 task_mgr.update_step(task.id, 0, "active", "Supervisor Decomposition", "brain")
                 bus.publish_event(
@@ -379,8 +478,12 @@ class PersonalAgent(AbstractAgent):
             success=all_success,
             response=response,
             tool_calls=tool_call_dicts,
+            should_speak=True,
+            mode="COMMAND",
         )
         self._record_history(command_id, command, out, start_time)
+        if self._settings.debug_performance:
+            logger.info("[AGENT] Command completed in %0.1fms", duration * 1000)
         return out
 
     def _record_history(

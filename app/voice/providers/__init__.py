@@ -1,10 +1,3 @@
-"""
-Text-to-Speech provider abstraction and implementations.
-Re-exports from app.voice.providers for backward compatibility.
-"""
-from __future__ import annotations
-
-from app.voice.providers.base import TTSProvider as TextToSpeechProvider
 from app.voice.providers.base import TTSProvider
 from app.voice.providers.factory import get_tts_provider
 from app.voice.providers.mock_tts import MockTTSProvider
@@ -12,7 +5,6 @@ from app.voice.providers.openai_tts import OpenAITTSProvider
 from app.voice.providers.system_tts import Pyttsx3TTSProvider, SystemTTSProvider
 
 __all__ = [
-    "TextToSpeechProvider",
     "TTSProvider",
     "SystemTTSProvider",
     "Pyttsx3TTSProvider",

@@ -88,22 +88,17 @@ Do not execute any tool until you have the missing information.
 
 def build_system_prompt(registry: "ToolRegistry") -> str:
     """
-    Build the full system prompt with the live tool summary injected.
-
-    This is called once per agent run so the prompt always reflects the
-    current set of registered tools.
+    Build a concise system prompt with active tools summary.
+    Full schemas are already provided via API function definitions.
     """
     lines: list[str] = []
     for tool in registry.all():
         perm = tool.permission_level.value
         req_confirm = getattr(tool, "requires_confirmation", False)
         confirm_note = " [REQUIRES CONFIRMATION]" if req_confirm else ""
-        lines.append(
-            f"  • {tool.name} ({perm}){confirm_note}\n"
-            f"    {tool.description}"
-        )
+        lines.append(f"  • {tool.name} ({perm}){confirm_note}: {tool.description[:60]}")
 
-    tool_summary = "\n\n".join(lines) if lines else "  (no tools registered)"
+    tool_summary = "\n".join(lines) if lines else "  (no tools registered)"
     return SYSTEM_PROMPT.format(tool_summary=tool_summary)
 
 

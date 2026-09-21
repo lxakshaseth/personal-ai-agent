@@ -42,6 +42,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await agent.startup()
     app.state.agent = agent
 
+    # Warm up VoiceResponseService (pre-loads TTS engine quietly for 0ms initial latency)
+    try:
+        from app.voice.voice_response_service import get_voice_service
+        get_voice_service()
+    except Exception as exc:
+        logger.debug("Voice pre-warm notice: %s", exc)
+
     logger.info("personal-ai-agent is ready.")
     yield
 

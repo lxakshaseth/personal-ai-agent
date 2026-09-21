@@ -50,7 +50,7 @@ export const api = {
     }>('/agent/status'),
 
   // Run command
-  runCommand: (command: string, confirmed = false, sessionId?: string) =>
+  runCommand: (command: string, confirmed = false, sessionId?: string, clientSpeaks = true) =>
     fetchJSON<{
       success: boolean;
       response: string;
@@ -64,7 +64,12 @@ export const api = {
       error?: string | null;
     }>('/agent/run', {
       method: 'POST',
-      body: JSON.stringify({ command, confirmed, session_id: sessionId }),
+      body: JSON.stringify({
+        command,
+        confirmed,
+        session_id: sessionId,
+        client_speaks: clientSpeaks,
+      }),
     }),
 
   // Tools
@@ -129,6 +134,7 @@ export const api = {
   resumeTask: (taskId: string) => fetchJSON<{ status: string; task_id: string }>(`/agent/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' }),
   cancelTask: (taskId: string) => fetchJSON<{ status: string; task_id: string }>(`/agent/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }),
   cancelActiveTask: () => fetchJSON<{ status: string }>('/agent/cancel', { method: 'POST' }),
+  stopActiveTask: () => fetchJSON<{ status: string }>('/agent/stop', { method: 'POST' }),
 
   // Config
   getConfig: () => fetchJSON<AgentConfig>('/agent/config'),

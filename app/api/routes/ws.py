@@ -61,13 +61,19 @@ async def websocket_events_endpoint(websocket: WebSocket) -> None:
                             import asyncio
                             asyncio.create_task(agent.approve_and_execute_task(task_id))
 
-                elif msg_type in ("cancel", "cancel_task"):
+                elif msg_type in ("cancel", "cancel_task", "stop"):
                     from app.agent.tasks import get_task_manager
+                    from app.voice.voice_response_service import get_voice_service
+                    # 1. Stop active audio immediately
+                    get_voice_service().stop()
+                    # 2. Cancel task
                     task_id = payload.get("task_id")
                     if task_id:
                         get_task_manager().cancel_task(task_id)
                     else:
                         get_task_manager().cancel_active_task()
+                    bus.set_status(AgentStatus.ONLINE, "Ready")
+                    bus.publish_event("agent.state", {"state": "IDLE", "detail": "Stopped"})
 
                 elif msg_type == "set_status":
                     status_str = payload.get("status")

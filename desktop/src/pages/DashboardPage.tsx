@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { ExecutionTimeline } from '../components/timeline/ExecutionTimeline';
 import { PlanApprovalCard } from '../components/plan/PlanApprovalCard';
+import { browserVoice } from '../services/voiceService';
 
 interface DashboardPageProps {
   setActiveTab: (tab: string) => void;
@@ -30,20 +31,72 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ setActiveTab }) =>
   const handleStartListening = useCallback(async () => {
     if (isListening) return; // Prevent double-trigger
     setIsListening(true);
-
-    // Immediately show listening indicator before API call
-    store.addMessage({
-      id: 'listening_' + Date.now(),
-      sender: 'agent',
-      text: '🎙 Listening... Speak your command now.',
-      timestamp: Date.now(),
-    });
     store.setStatus('listening', 'Listening for speech...');
 
+    // 1. ULTRA-FAST BROWSER NATIVE SPEECH RECOGNITION (Google Gemini speed, <1s)
+    if (browserVoice.isSupported()) {
+      try {
+        let liveTranscript = '';
+        const transcript = await browserVoice.startListening({
+          onStart: () => {
+            store.setStatus('listening', 'Listening... Speak now');
+          },
+          onInterim: (text) => {
+            liveTranscript = text;
+            store.setStatus('listening', `Heard: "${text}"`);
+          },
+          onError: (err) => {
+            console.warn('Browser speech recognition notice:', err);
+          },
+        });
+
+        const recognizedText = (transcript || liveTranscript).trim();
+        if (recognizedText) {
+          // Immediately add user message to chat
+          store.addMessage({
+            id: 'voice_user_' + Date.now(),
+            sender: 'user',
+            source: 'voice',
+            text: recognizedText,
+            timestamp: Date.now(),
+          });
+          store.setStatus('executing', `Executing: "${recognizedText}"...`);
+
+          // Execute command via backend (fast path handles simple commands in ~40ms!)
+          const res = await api.runCommand(recognizedText);
+
+          // Add agent response to chat
+          store.addMessage({
+            id: 'voice_agent_' + Date.now(),
+            sender: 'agent',
+            text: res.response ?? 'Done.',
+            timestamp: Date.now(),
+            tool_calls: res.tool_calls,
+          });
+          store.setStatus('online', 'Ready');
+
+          // Speak response aloud immediately
+          if (res.response) {
+            browserVoice.speak(res.response);
+          }
+          setIsListening(false);
+          return;
+        }
+      } catch (err) {
+        console.warn('Browser speech recognition fallback to backend capture:', err);
+      }
+    }
+
+    // 2. FALLBACK: Backend sounddevice + Groq Whisper
     try {
+      store.addMessage({
+        id: 'listening_' + Date.now(),
+        sender: 'agent',
+        text: '🎙 Listening... Speak your command now.',
+        timestamp: Date.now(),
+      });
       const res = await api.triggerListen();
       if (res.success && res.transcript) {
-        // Show user's spoken command + agent response as chat messages
         store.addMessage({
           id: 'voice_user_' + Date.now(),
           sender: 'user',
@@ -59,6 +112,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ setActiveTab }) =>
           tool_calls: res.tool_calls,
         });
         store.setStatus('online', 'Ready');
+        if (res.response) {
+          browserVoice.speak(res.response);
+        }
       } else if (res.error) {
         store.addMessage({
           id: 'notice_' + Date.now(),
@@ -120,6 +176,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ setActiveTab }) =>
         tool_calls: res.tool_calls,
         error: res.error,
       });
+      if (res.response) {
+        browserVoice.speak(res.response);
+      }
     } catch (err: any) {
       store.addMessage({
         id: 'err_' + Date.now(),
@@ -200,10 +259,44 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ setActiveTab }) =>
           AI AGENT CORE
         </span>
 
-        {/* ◉ READY Badge */}
+        {/* ◉ State Badge */}
         <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-slate-900/90 border border-cyan-500/30 text-cyan-300 text-xs font-mono font-semibold mb-4 shadow-sm">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-          <span>◉ {state.status === 'online' ? 'READY' : state.status.toUpperCase()}</span>
+          <span
+            className={`w-2 h-2 rounded-full ${
+              state.status === 'listening'
+                ? 'bg-cyan-400 animate-pulse'
+                : state.status === 'thinking' || state.status === 'planning'
+                ? 'bg-purple-400 animate-pulse'
+                : state.status === 'executing'
+                ? 'bg-blue-400 animate-pulse'
+                : state.status === 'speaking'
+                ? 'bg-emerald-400 animate-ping'
+                : state.status === 'waiting_confirmation'
+                ? 'bg-amber-400 animate-bounce'
+                : state.status === 'error'
+                ? 'bg-rose-400'
+                : 'bg-emerald-400'
+            }`}
+          />
+          <span>
+            ◉ {
+              state.status === 'online' || state.status === 'idle'
+                ? 'READY'
+                : state.status === 'speaking'
+                ? 'SPEAKING'
+                : state.status === 'listening'
+                ? 'LISTENING'
+                : state.status === 'transcribing'
+                ? 'TRANSCRIBING'
+                : state.status === 'thinking'
+                ? 'THINKING'
+                : state.status === 'planning'
+                ? 'PLANNING'
+                : state.status === 'executing'
+                ? 'EXECUTING'
+                : state.status.toUpperCase()
+            }
+          </span>
         </div>
 
         {/* Quote */}
@@ -211,24 +304,37 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ setActiveTab }) =>
           "How can I help you?"
         </h2>
 
-        {/* [ 🎙 Start Listening ] Button */}
-        <button
-          onClick={handleStartListening}
-          disabled={isListening}
-          className={`group relative inline-flex items-center gap-3 px-8 py-3.5 rounded-2xl font-semibold text-sm shadow-xl transition-all border ${
-            isListening
-              ? 'bg-cyan-500/90 border-cyan-400/60 text-white shadow-cyan-500/40 animate-pulse cursor-not-allowed'
-              : 'bg-gradient-to-r from-cyan-600 via-blue-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white shadow-cyan-950/60 hover:scale-105 active:scale-95 border-cyan-400/30'
-          }`}
-        >
-          <Mic className={`w-5 h-5 text-cyan-200 ${!isListening && 'group-hover:scale-110'} transition-transform`} />
-          <span>{isListening ? '🎙 Listening...' : 'Start Listening'}</span>
-          {!isListening && (
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/30 text-cyan-200 border border-white/10">
-              Ctrl + Space
-            </span>
+        {/* Controls: [ 🎙 Start Listening ] & [ ⏹ Stop ] */}
+        <div className="flex items-center justify-center gap-3">
+          <button
+            onClick={handleStartListening}
+            disabled={isListening}
+            className={`group relative inline-flex items-center gap-3 px-8 py-3.5 rounded-2xl font-semibold text-sm shadow-xl transition-all border ${
+              isListening
+                ? 'bg-cyan-500/90 border-cyan-400/60 text-white shadow-cyan-500/40 animate-pulse cursor-not-allowed'
+                : 'bg-gradient-to-r from-cyan-600 via-blue-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white shadow-cyan-950/60 hover:scale-105 active:scale-95 border-cyan-400/30'
+            }`}
+          >
+            <Mic className={`w-5 h-5 text-cyan-200 ${!isListening && 'group-hover:scale-110'} transition-transform`} />
+            <span>{isListening ? '🎙 Listening...' : 'Start Listening'}</span>
+            {!isListening && (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/30 text-cyan-200 border border-white/10">
+                Ctrl + Space
+              </span>
+            )}
+          </button>
+
+          {(isListening || isExecuting || state.status === 'executing' || state.status === 'thinking' || state.status === 'speaking' || state.status === 'listening') && (
+            <button
+              onClick={() => store.stopActive()}
+              className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl font-semibold text-sm bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-800/80 shadow-lg shadow-rose-950/40 transition-all hover:scale-105 active:scale-95"
+              title="Stop current task or audio (Esc)"
+            >
+              <span className="w-2.5 h-2.5 rounded-sm bg-rose-400" />
+              <span>Stop (Esc)</span>
+            </button>
           )}
-        </button>
+        </div>
 
         {/* Quick Text Input Bar */}
         <form onSubmit={handleRunCommand} className="w-full max-w-xl mt-6 flex items-center gap-2">

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { ExecutionTimeline } from '../components/timeline/ExecutionTimeline';
 import { PlanApprovalCard } from '../components/plan/PlanApprovalCard';
+import { browserVoice } from '../services/voiceService';
 
 export const ChatPage: React.FC = () => {
   const [state, store] = useAgentStore();
@@ -63,6 +64,10 @@ export const ChatPage: React.FC = () => {
         tool_calls: res.tool_calls,
         error: res.error,
       });
+      // Speak response aloud immediately
+      if (res.response) {
+        browserVoice.speak(res.response);
+      }
     } catch (err: any) {
       store.addMessage({
         id: 'err_' + Date.now(),
@@ -77,6 +82,49 @@ export const ChatPage: React.FC = () => {
   };
 
   const handleVoiceListen = async () => {
+    // 1. Browser Native Real-Time Voice (<1s, Google Gemini style)
+    if (browserVoice.isSupported()) {
+      try {
+        store.setStatus('listening', 'Listening... Speak now');
+        let liveTranscript = '';
+        const transcript = await browserVoice.startListening({
+          onInterim: (text) => {
+            liveTranscript = text;
+            store.setStatus('listening', `Heard: "${text}"`);
+          },
+        });
+
+        const recognizedText = (transcript || liveTranscript).trim();
+        if (recognizedText) {
+          store.addMessage({
+            id: 'u_' + Date.now(),
+            sender: 'user',
+            source: 'voice',
+            text: recognizedText,
+            timestamp: Date.now(),
+          });
+          store.setStatus('executing', `Executing: "${recognizedText}"...`);
+
+          const res = await api.runCommand(recognizedText);
+          if (res.response) {
+            store.addMessage({
+              id: 'a_' + Date.now(),
+              sender: 'agent',
+              text: res.response,
+              timestamp: Date.now(),
+              tool_calls: res.tool_calls,
+            });
+            browserVoice.speak(res.response);
+          }
+          store.setStatus('online', 'Ready');
+          return;
+        }
+      } catch (err) {
+        console.warn('Browser speech recognition failed, fallback to backend:', err);
+      }
+    }
+
+    // 2. Fallback: Backend capture
     try {
       store.setStatus('listening', 'Listening for speech...');
       const res = await api.triggerListen();
@@ -96,8 +144,10 @@ export const ChatPage: React.FC = () => {
             timestamp: Date.now(),
             tool_calls: res.tool_calls,
           });
+          browserVoice.speak(res.response);
         }
       }
+      store.setStatus('online', 'Ready');
     } catch (e: any) {
       store.setStatus('error', e.message);
     }
@@ -332,10 +382,24 @@ export const ChatPage: React.FC = () => {
           );
         })}
 
-        {isSending && (
-          <div className="flex items-center gap-3 p-4 bg-[#0e1320] border border-slate-800 rounded-2xl max-w-sm mr-auto text-xs text-slate-400 animate-pulse">
-            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-            <span>NOVA is thinking and executing tools...</span>
+        {isSending && state.status !== 'online' && state.status !== 'idle' && state.status !== 'error' && (
+          <div className="flex items-center justify-between p-3.5 bg-[#0e1320] border border-cyan-900/40 rounded-2xl max-w-md mr-auto text-xs text-slate-300 shadow-lg animate-in fade-in">
+            <div className="flex items-center gap-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
+              <span className="font-mono text-cyan-200">
+                {state.status === 'executing'
+                  ? state.statusDetail || 'Executing tools...'
+                  : state.status === 'speaking'
+                  ? 'NOVA is speaking...'
+                  : state.statusDetail || 'NOVA is processing...'}
+              </span>
+            </div>
+            <button
+              onClick={() => store.stopActive()}
+              className="px-2.5 py-1 text-[11px] font-mono font-semibold bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded-lg transition-colors ml-4"
+            >
+              ⏹ Stop
+            </button>
           </div>
         )}
 

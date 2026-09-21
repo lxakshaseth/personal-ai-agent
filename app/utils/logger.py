@@ -91,7 +91,18 @@ def configure_logging() -> None:
     root.addHandler(file_handler)
 
     # Silence noisy third-party loggers
-    for noisy in ("httpx", "httpcore", "uvicorn.access"):
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "uvicorn.access",
+        "comtypes",
+        "comtypes.client",
+        "comtypes._comobject",
+        "comtypes._vtbl",
+        "pyttsx3",
+        "asyncio",
+        "watchfiles",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

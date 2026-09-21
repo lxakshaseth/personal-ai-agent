@@ -58,9 +58,24 @@ class Settings(BaseSettings):
         default="openai/gpt-oss-120b",
         description="Groq model name — set via GROQ_MODEL env var",
     )
+    groq_fast_model: str = Field(
+        default="qwen/qwen3.8-27b",
+        validation_alias=AliasChoices("groq_fast_model", "fast_model"),
+        description="Fast model for intent classification, short responses, and greetings",
+    )
+    groq_reasoning_model: str = Field(
+        default="openai/gpt-oss-120b",
+        validation_alias=AliasChoices("groq_reasoning_model", "reasoning_model"),
+        description="Reasoning model for complex planning and tool use",
+    )
 
     groq_max_tokens: int = Field(default=1024)
     groq_temperature: float = Field(default=0.0)
+    debug_performance: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("debug_performance", "perf_debug"),
+        description="Emit detailed latency metrics in logs",
+    )
 
     # ── Agent ─────────────────────────────────────────────────────────────────
     agent_max_iterations: int = Field(default=10)
@@ -135,6 +150,14 @@ class Settings(BaseSettings):
         default="Jarvis",
         description="Wake word string, e.g. Jarvis",
     )
+
+    # ── Real-Time Streaming Voice Settings ────────────────────────────────────
+    voice_mode: str = Field(default="fast", description="Voice pipeline mode: 'fast' or 'standard'")
+    voice_vad_aggressiveness: int = Field(default=3, ge=0, le=3, description="WebRTC VAD filter level (0-3)")
+    voice_silence_threshold_ms: int = Field(default=450, ge=200, le=3000, description="Silence timeout before STT finalization")
+    voice_chunk_min_words: int = Field(default=4, ge=2, le=15, description="Min words before chunk boundary split")
+    voice_max_history: int = Field(default=8, ge=2, le=30, description="Max conversation turns in sliding history")
+    debug_voice_latency: bool = Field(default=True, description="Log detailed TTFA pipeline latency metrics")
 
     # ── Storage (future) ──────────────────────────────────────────────────────
     database_url: Optional[str] = Field(default=None)

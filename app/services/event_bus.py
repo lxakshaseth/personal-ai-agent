@@ -20,15 +20,22 @@ logger = logging.getLogger(__name__)
 class AgentStatus(str, Enum):
     OFFLINE = "offline"
     ONLINE = "online"
+    IDLE = "idle"
     LISTENING = "listening"
+    TRANSCRIBING = "transcribing"
     THINKING = "thinking"
+    PLANNING = "planning"
     EXECUTING = "executing"
     WAITING_CONFIRMATION = "waiting_confirmation"
+    SPEAKING = "speaking"
+    COMPLETED = "completed"
     ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 class EventType(str, Enum):
     STATUS_CHANGED = "status_changed"
+    AGENT_STATE = "agent.state"
     TOOL_STARTED = "tool_started"
     TOOL_FINISHED = "tool_finished"
     TOOL_FAILED = "tool_failed"
@@ -59,15 +66,51 @@ class EventBus:
     def status_detail(self) -> str:
         return self._status_detail
 
-    def set_status(self, status: AgentStatus, detail: str = "") -> None:
-        """Update current agent status and broadcast status change event."""
-        self._current_status = status
-        self._status_detail = detail or status.value.replace("_", " ").title()
+    def set_status(
+        self,
+        status: AgentStatus | str,
+        detail: str = "",
+        request_id: str | None = None,
+    ) -> None:
+        """
+        Update current agent status and broadcast both legacy status_changed and
+        canonical agent.state events in real time.
+        """
+        if isinstance(status, str):
+            try:
+                status_enum = AgentStatus(status.lower())
+            except ValueError:
+                status_enum = AgentStatus.ONLINE
+        else:
+            status_enum = status
+
+        self._current_status = status_enum
+        self._status_detail = detail or status_enum.value.replace("_", " ").title()
+
+        # Map to canonical state name
+        state_key = status_enum.name
+        if state_key in ("ONLINE", "IDLE"):
+            canonical_state = "IDLE"
+        else:
+            canonical_state = state_key
+
+        # 1. Canonical agent.state event (requirement 2)
+        state_payload: dict[str, Any] = {
+            "state": canonical_state,
+            "status": status_enum.value,
+            "detail": self._status_detail,
+        }
+        if request_id:
+            state_payload["request_id"] = request_id
+        self.publish_event("agent.state", state_payload)
+
+        # 2. Legacy status_changed event
         self.publish_event(
             EventType.STATUS_CHANGED.value,
             {
                 "status": self._current_status.value,
                 "detail": self._status_detail,
+                "request_id": request_id,
             },
         )
 

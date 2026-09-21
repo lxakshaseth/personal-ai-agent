@@ -213,6 +213,37 @@ export const agentStore = {
     });
   },
 
+  stopActive: async () => {
+    // 1. Send WebSocket stop
+    wsClient.send('stop', { task_id: state.activeExecution?.taskId });
+    // 2. Call REST stop (cancels active task and halts TTS)
+    try {
+      await api.stopActiveTask();
+    } catch (e) {
+      console.warn('REST stop failed, WS stop sent', e);
+    }
+
+    // 3. Immediate local state reset to READY
+    state = {
+      ...state,
+      status: 'online',
+      statusDetail: 'Ready',
+      activeExecution: null,
+    };
+    notify();
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    agentStore.addTimelineItem({
+      id: 'stop_' + Date.now(),
+      event: 'task_stopped',
+      timestamp: timeStr,
+      rawTimestamp: Date.now(),
+      title: '⏹ Stopped by user',
+      status: 'cancelled',
+    });
+  },
+
   reconnect: async (): Promise<boolean> => {
     try {
       state = {
