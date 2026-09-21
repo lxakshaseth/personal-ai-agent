@@ -212,10 +212,10 @@ class CloseApplicationTool(AbstractTool):
 
 
 class _WhatsAppMessageInput(BaseModel):
-    message: str = Field(..., min_length=1, description="The message text to send")
+    message: str = Field(default="Hello", description="The message text to send")
     contact: Optional[str] = Field(
         default=None,
-        description="Contact name or phone number (e.g. 'Aditya Tiwari' or '+919876543210')",
+        description="Contact name or phone number (e.g. 'Aditya' or '+919876543210')",
     )
 
 
@@ -245,22 +245,20 @@ class SendWhatsAppMessageTool(AbstractTool):
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "The message text to send",
+                    "description": "The message text to send (defaults to 'Hello' if omitted)",
                 },
                 "contact": {
                     "type": "string",
-                    "description": "Contact name or phone number (e.g. 'Aditya Tiwari' or '+919876543210')",
+                    "description": "Contact name or phone number (e.g. 'Aditya' or '+919876543210')",
                 },
             },
-            "required": ["message"],
+            "required": [],
         }
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         contact: str = kwargs.get("contact", "") or ""
-        message: str = kwargs.get("message", "").strip()
-
-        if not message:
-            return ToolResult(success=False, output="", error="Message cannot be empty.")
+        raw_msg: str = kwargs.get("message", "") or ""
+        message: str = raw_msg.strip() or "Hello"
 
         encoded_msg = urllib.parse.quote(message)
 

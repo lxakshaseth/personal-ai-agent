@@ -123,8 +123,8 @@ class GroqClient:
 
     def __init__(self) -> None:
         self._circuit_breaker = CircuitBreaker("groq_api", failure_threshold=5, cooldown_seconds=20.0)
-        self.max_retries = 3
-        self.request_timeout = 25.0
+        self.max_retries = 2
+        self.request_timeout = 8.0
         self._refresh_client()
 
     @property
@@ -169,20 +169,13 @@ class GroqClient:
         _retried: bool = False,
     ) -> str:
         """
-        Plain text chat completion guarded by CircuitBreaker, timeouts, and exponential backoff retries.
-
-        Returns:
-            The assistant's reply as a string.
-
-        Raises:
-            PlannerError with a GroqErrorDetail attached on any API failure.
+        Plain-text chat completion guarded by CircuitBreaker, timeouts, and retries.
         """
         client = self._get_client()
         target_model = model or self._model
 
         response = None
         for attempt in range(self.max_retries):
-            # 1. Circuit breaker availability check
             if not await self._circuit_breaker.is_available():
                 detail = GroqErrorDetail(
                     error_type=GroqErrorType.NETWORK,
@@ -227,10 +220,11 @@ class GroqClient:
                 exc_str = str(exc).lower()
                 is_rate_limit = "rate_limit" in exc_str or "429" in exc_str or isinstance(exc, groq.RateLimitError)
                 is_not_found = "model_not_found" in exc_str or "does not exist" in exc_str
+                is_timeout = "timeout" in exc_str or isinstance(exc, (asyncio.TimeoutError, TimeoutError))
 
-                if not _retried and (is_rate_limit or is_not_found):
-                    fallback = "openai/gpt-oss-20b" if target_model != "openai/gpt-oss-20b" else "openai/gpt-oss-120b"
-                    reason = "Rate limit reached" if is_rate_limit else "Model not available"
+                if not _retried and (is_rate_limit or is_not_found or is_timeout):
+                    fallback = "openai/gpt-oss-20b" if target_model != "openai/gpt-oss-20b" else "qwen/qwen3.8-27b"
+                    reason = "Timeout" if is_timeout else ("Rate limit reached" if is_rate_limit else "Model not available")
                     logger.warning("%s on %s. Instantly falling back to %s", reason, target_model, fallback)
                     return await self.chat_completion(
                         messages,
@@ -245,7 +239,7 @@ class GroqClient:
                     await self._circuit_breaker.record_failure(exc)
 
                 if detail.retryable and attempt < self.max_retries - 1:
-                    backoff = (0.5 * (2 ** attempt)) + random.uniform(0.1, 0.3)
+                    backoff = 0.2 * (2 ** attempt)
                     logger.warning(
                         "Groq chat_completion error [%s]: %s. Retrying in %0.2fs (attempt %d/%d)...",
                         detail.error_type.value,
@@ -415,10 +409,11 @@ class GroqClient:
                 exc_str = str(exc).lower()
                 is_rate_limit = "rate_limit" in exc_str or "429" in exc_str or isinstance(exc, groq.RateLimitError)
                 is_not_found = "model_not_found" in exc_str or "does not exist" in exc_str
+                is_timeout = "timeout" in exc_str or isinstance(exc, (asyncio.TimeoutError, TimeoutError))
 
-                if not _retried and (is_rate_limit or is_not_found):
-                    fallback = "openai/gpt-oss-20b" if target_model != "openai/gpt-oss-20b" else "openai/gpt-oss-120b"
-                    reason = "Rate limit reached" if is_rate_limit else "Model not available"
+                if not _retried and (is_rate_limit or is_not_found or is_timeout):
+                    fallback = "openai/gpt-oss-20b" if target_model != "openai/gpt-oss-20b" else "qwen/qwen3.8-27b"
+                    reason = "Timeout" if is_timeout else ("Rate limit reached" if is_rate_limit else "Model not available")
                     logger.warning("%s on %s. Instantly falling back to %s", reason, target_model, fallback)
                     return await self.chat_completion_with_tools(
                         messages,
@@ -435,7 +430,7 @@ class GroqClient:
                     await self._circuit_breaker.record_failure(exc)
 
                 if detail.retryable and attempt < self.max_retries - 1:
-                    backoff = (0.5 * (2 ** attempt)) + random.uniform(0.1, 0.3)
+                    backoff = 0.2 * (2 ** attempt)
                     logger.warning(
                         "Groq tool completion error [%s]: %s. Retrying in %0.2fs (attempt %d/%d)...",
                         detail.error_type.value,

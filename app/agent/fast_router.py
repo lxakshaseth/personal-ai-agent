@@ -48,6 +48,7 @@ WEBSITE_MAP: dict[str, str] = {
     "linkedin": "https://www.linkedin.com",
     "stackoverflow": "https://stackoverflow.com",
     "wikipedia": "https://www.wikipedia.org",
+    "whatsapp": "https://web.whatsapp.com",
 }
 
 # Common desktop applications
@@ -70,6 +71,8 @@ APP_MAP: dict[str, str] = {
     "paint": "Paint",
     "spotify": "Spotify",
     "task manager": "Task Manager",
+    "whatsapp": "WhatsApp",
+    "whats app": "WhatsApp",
 }
 
 # Conversational greetings & pleasantries (CHAT mode)
@@ -116,6 +119,32 @@ def is_exit_command(text: str) -> bool:
     return bool(EXIT_COMMAND_PATTERN.match(text.strip().lower()))
 
 
+def parse_whatsapp_intent(command: str) -> Optional[tuple[str, str]]:
+    """Extract contact and message from natural language WhatsApp commands."""
+    cmd = command.strip()
+    m = re.match(
+        r"^(?:open\s+whatsapp\s+(?:and\s+)?(?:message|text|send\s+message\s+to)|send\s+(?:a\s+)?whatsapp(?:\s+message)?\s+to|whatsapp)\s+([a-zA-Z0-9_\+]+)(?:\s+(?:saying|with\s+message|message)?\s*(.*))?$",
+        cmd,
+        re.I,
+    )
+    if m:
+        contact = m.group(1).strip()
+        msg = (m.group(2) or "").strip() or "Hello"
+        return contact, msg
+
+    m = re.match(
+        r"^(?:message|text|send\s+message\s+to)\s+([a-zA-Z0-9_\+]+)\s+(?:on|via)\s+whatsapp(?:\s+(?:saying|with\s+message)?\s*(.*))?$",
+        cmd,
+        re.I,
+    )
+    if m:
+        contact = m.group(1).strip()
+        msg = (m.group(2) or "").strip() or "Hello"
+        return contact, msg
+
+    return None
+
+
 class FastRouter:
     """
     Lightweight intent router evaluated prior to Groq LLM planning.
@@ -127,8 +156,21 @@ class FastRouter:
         if not cmd:
             return FastRouteMatch(matched=False)
 
-        # ── 0. Multi-step or combined commands must go to Supervisor / LLM ─────
-        if re.search(r"\b(?:and\s+then|then|and\s+also|and|after\s+that)\b", cmd) or "," in cmd or ";" in cmd:
+        # ── 0a. WhatsApp Instant Actions (0ms bypass) ─────────────────────────
+        wa_intent = parse_whatsapp_intent(command)
+        if wa_intent:
+            contact, msg = wa_intent
+            prefix = f"Opening WhatsApp to message {contact}." if msg == "Hello" else f"Sending WhatsApp message to {contact}: \"{msg}\"."
+            return FastRouteMatch(
+                matched=True,
+                mode=ResponseMode.COMMAND,
+                tool_name="send_whatsapp_message",
+                arguments={"contact": contact, "message": msg},
+                conversational_prefix=prefix,
+            )
+
+        # ── 0b. Multi-step or combined commands must go to Supervisor / LLM ───
+        if re.search(r"\b(?:and\s+then|then|and\s+also|after\s+that)\b", cmd) or "," in cmd or ";" in cmd:
             return FastRouteMatch(matched=False)
 
         # ── 1. Pure Chat / Greetings (0ms latency, warm & conversational) ─────

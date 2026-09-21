@@ -108,7 +108,17 @@ class GroqPlanner:
 
         # ── Groq function-calling ──────────────────────────────────────────────
         # PlannerError is re-raised from GroqClient on any API failure.
-        message = await self._client.chat_completion_with_tools(messages, tools)
+        try:
+            message = await self._client.chat_completion_with_tools(messages, tools)
+        except PlannerError as exc:
+            if "timeout" in str(exc).lower():
+                logger.warning("Planner function-calling timed out; falling back to plain chat completion...")
+                try:
+                    fallback_text = await self._client.chat_completion(messages, max_tokens=150)
+                    return PlannerResult(text_reply=fallback_text)
+                except Exception:
+                    pass
+            raise
 
         # ── Parse and validate tool calls ──────────────────────────────────────
         if message.tool_calls:
