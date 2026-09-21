@@ -113,10 +113,56 @@ EXIT_COMMAND_PATTERN = re.compile(
     re.I,
 )
 
+# ── Knowledge Query Patterns (skip tool-calling, go straight to LLM chat) ────
+# Queries that clearly need NO tool — pure knowledge/explanation/Q&A
+_KNOWLEDGE_PREFIXES = re.compile(
+    r"^(?:"
+    r"explain(?:\s+(?:to\s+me|in\s+detail|briefly|simply|the\s+concept\s+of))?\s+"
+    r"|what\s+(?:is|are|was|were|does|do|did|means?)\s+"
+    r"|how\s+(?:does|do|did|to|can|should)\s+"
+    r"|why\s+(?:is|are|was|were|do|does|did|should|can)\s+"
+    r"|who\s+(?:is|are|was|were)\s+"
+    r"|when\s+(?:is|are|was|were|did|does|do|should)\s+"
+    r"|where\s+(?:is|are|was|were|can|do|does)\s+"
+    r"|tell\s+me\s+(?:about|the\s+history\s+of|more\s+about|something\s+about)\s+"
+    r"|describe\s+"
+    r"|define\s+"
+    r"|give\s+me\s+(?:a\s+)?(?:brief\s+)?(?:summary|overview|explanation|definition|example|examples)\s+(?:of\s+)?"
+    r"|what'?s\s+(?:the\s+)?"
+    r"|i\s+want\s+to\s+(?:know|understand|learn)\s+(?:about\s+)?"
+    r"|can\s+you\s+explain\s+"
+    r"|please\s+explain\s+"
+    r")",
+    re.I,
+)
+
+# Signals that a "knowledge-looking" query actually needs a tool
+_TOOL_SIGNAL_WORDS = re.compile(
+    r"\b(?:open|launch|create|delete|send|run|execute|search\s+(?:youtube|google|web)|"
+    r"take\s+screenshot|lock|install|download|upload|type|click|move|copy|rename|"
+    r"whatsapp|message|call|email|set\s+alarm|reminder|timer)\b",
+    re.I,
+)
+
 
 def is_exit_command(text: str) -> bool:
     """Check if the given command is an exit / end conversation command."""
     return bool(EXIT_COMMAND_PATTERN.match(text.strip().lower()))
+
+
+def is_knowledge_query(text: str) -> bool:
+    """
+    Return True if the command is a pure knowledge/explanation query
+    that clearly requires NO tool execution — only a streaming LLM answer.
+    Queries with action keywords (open, send, create, etc.) are excluded.
+    """
+    t = text.strip()
+    if len(t) < 5 or len(t) > 600:
+        return False
+    if _TOOL_SIGNAL_WORDS.search(t):
+        return False
+    return bool(_KNOWLEDGE_PREFIXES.match(t))
+
 
 
 def parse_whatsapp_intent(command: str) -> Optional[tuple[str, str]]:

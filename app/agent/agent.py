@@ -216,6 +216,60 @@ class PersonalAgent(AbstractAgent):
                         logger.info("[ROUTER] Fast tool %s executed in %0.1fms", fast_route.tool_name, duration * 1000)
                     return out
 
+            # ── 0b. Knowledge Query Fast Path (bypass tool-calling overhead) ────────
+            # Pure Q&A/explanation queries go directly to streaming LLM, skipping
+            # the 25-tool prompt that causes 8s+ timeouts on complex answers.
+            from app.agent.fast_router import is_knowledge_query
+            if is_knowledge_query(command):
+                bus.set_status(AgentStatus.THINKING, "Streaming knowledge response...")
+                from app.services.groq_client import get_groq_client
+                groq = get_groq_client()
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are NOVA, a helpful Windows AI assistant. "
+                            "Answer concisely and clearly. For voice responses keep answers under 3 sentences "
+                            "unless the user explicitly asks for more detail."
+                        ),
+                    },
+                    {"role": "user", "content": command},
+                ]
+                try:
+                    tokens = []
+                    async for tok in groq.stream_chat_completion(messages):
+                        tokens.append(tok)
+                    reply = "".join(tokens).strip() or "I'm not sure about that."
+                except Exception as exc:
+                    logger.warning("Knowledge stream failed, falling through to planner: %s", exc)
+                    reply = None
+
+                if reply:
+                    duration = round(time.time() - start_time, 2)
+                    task_mgr.complete_task(task.id, reply)
+                    bus.set_status(AgentStatus.ONLINE, "Ready", request_id=command_id)
+                    bus.publish_event(
+                        "agent.completed",
+                        {
+                            "request_id": command_id,
+                            "response": reply,
+                            "success": True,
+                            "duration": duration,
+                            "tool_calls": [],
+                            "task_id": task.id,
+                        },
+                    )
+                    out = AgentOutput(
+                        success=True,
+                        response=reply,
+                        tool_calls=[],
+                        should_speak=True,
+                        mode="CHAT",
+                    )
+                    self._record_history(command_id, command, out, start_time)
+                    logger.info("[KNOWLEDGE] Streamed response in %0.1fms (no tool overhead)", duration * 1000)
+                    return out
+
             # ── 1. Complex Multi-Step Task Check (Supervisor Agent) ─────────────────
             if self._supervisor.is_complex_command(command) and not agent_input.confirmed:
                 task_mgr.update_step(task.id, 0, "active", "Supervisor Decomposition", "brain")
