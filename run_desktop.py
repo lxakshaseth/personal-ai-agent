@@ -73,7 +73,7 @@ def wait_for_backend(timeout: float = 20.0) -> bool:
 
 def launch_desktop():
     """Launch the Electron desktop application."""
-    print("[Launcher] Launching Windows Desktop AI Control Center ...")
+    print("[Launcher] Launching Desktop Robot Companion on Home Screen ...")
     npx_cmd = "npx.cmd" if sys.platform == "win32" else "npx"
 
     # Make sure desktop dist exists; if not, build it
@@ -82,6 +82,7 @@ def launch_desktop():
         print("[Launcher] Building desktop bundle ...")
         subprocess.run([npx_cmd, "vite", "build"], cwd=str(DESKTOP_DIR), check=True)
 
+    print("[Launcher] Robot is live on your desktop! Press Ctrl+Shift+R or click 'Dashboard' to expand.")
     # Launch Electron
     electron_proc = subprocess.run(
         [npx_cmd, "electron", "."],
@@ -93,7 +94,7 @@ def launch_desktop():
 
 def main():
     print("=" * 60)
-    print(" Personal AI Agent — Windows Desktop Control Center")
+    print(" Personal AI Agent — Desktop Robot Companion & Control Center")
     print("=" * 60)
 
     backend_proc: subprocess.Popen | None = None

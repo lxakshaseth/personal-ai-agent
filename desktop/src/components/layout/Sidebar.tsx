@@ -16,9 +16,10 @@ import { useAgentStore } from '../../stores/agentStore';
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  onSwitchToRobot?: () => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onSwitchToRobot }) => {
   const [state] = useAgentStore();
 
   const navItems = [
@@ -105,9 +106,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         </nav>
       </div>
 
-      {/* Footer Info */}
-      <div className="p-4 border-t border-slate-800/80">
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-3 flex items-center justify-between">
+      {/* Footer Info & Robot Mode Dock */}
+      <div className="p-4 border-t border-slate-800/80 space-y-2">
+        {onSwitchToRobot && (
+          <button
+            onClick={onSwitchToRobot}
+            className="w-full py-2 px-3 rounded-xl bg-slate-900 hover:bg-cyan-950/60 border border-slate-800 hover:border-cyan-500/40 text-slate-300 hover:text-cyan-300 transition-all flex items-center justify-between text-xs font-medium group"
+          >
+            <div className="flex items-center gap-2">
+              <Bot className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
+              <span>Desktop Robot</span>
+            </div>
+            <span className="text-[10px] font-mono text-slate-500 group-hover:text-cyan-400">Ctrl+Shift+R</span>
+          </button>
+        )}
+
+        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-2.5 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span
               className={`w-2 h-2 rounded-full ${
